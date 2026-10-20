@@ -157,6 +157,14 @@ class LightBackupConfig(BaseConfig):
             ge=0.5,
             le=168.0,
         )
+        hot_reload: bool = Field(
+            default=True,
+            description=(
+                "改 ``daily_at`` 要不要重启才生效。\n"
+                "开着（默认）：每 5 分钟巡检时**重读一遍本文件**，改完最迟 5 分钟后生效；\n"
+                "关掉：只认启动时加载的配置，改完得 ``/reload light_backup`` 或重启。"
+            ),
+        )
 
     @config_section("restore")
     class RestoreSection(SectionBase):

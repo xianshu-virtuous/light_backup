@@ -17,15 +17,16 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date
 from typing import Any
 
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BasePlugin, register_plugin
 from src.kernel.scheduler import TriggerType, get_unified_scheduler
 
+from . import interop
 from .commands import BackupCommand
 from .config import LightBackupConfig
+from .paths import plugin_config_path, resolve_instance_root
 from .service import LightBackupService
 from .tools import BackupNowTool, CheckBackupStatusTool
 
@@ -103,12 +104,15 @@ class LightBackupPlugin(BasePlugin):
             return
 
         schedule_cfg = self.config.schedule
-        if schedule_cfg.enabled:
+        live = self._live_schedule()
+        if live.get("enabled"):
             self._startup_task = asyncio.create_task(self._register_schedule_when_ready())
         else:
             logger.info("[light_backup] 自动备份已关闭，只能手动 /备份 现在")
 
-        if schedule_cfg.run_on_startup:
+        if live.get("run_on_startup"):
+            asyncio.create_task(self._startup_backup())
+        elif schedule_cfg.run_on_startup:
             asyncio.create_task(self._startup_backup())
 
     async def on_unload(self) -> None:
@@ -153,13 +157,25 @@ class LightBackupPlugin(BasePlugin):
 
         logger.warning("[light_backup] 等待调度器就绪超时，自动备份未注册")
 
-    def _due(self, now: float, state: dict[str, Any]) -> bool:
-        """现在该不该自动备份。"""
-        schedule_cfg = self.config.schedule if isinstance(self.config, LightBackupConfig) else None
-        if schedule_cfg is None or not schedule_cfg.enabled:
+    def _live_schedule(self) -> dict[str, Any]:
+        """取当前生效的定时设置（委托给 service，支持热读配置文件）。"""
+        return self._service().schedule_view()
+
+    def _due(self, now: float, state: dict[str, Any], live: dict[str, Any]) -> bool:
+        """现在该不该自动备份。
+
+        Args:
+            now: 当前时刻。
+            state: 运行时状态（含上次备份时间）。
+            live: :meth:`_live_schedule` 的结果。
+
+        Returns:
+            该备份返回 ``True``。
+        """
+        if not live.get("enabled"):
             return False
 
-        parsed = _parse_daily_at(schedule_cfg.daily_at)
+        parsed = _parse_daily_at(str(live.get("daily_at") or ""))
         if parsed is None:
             return False
 
@@ -169,14 +185,13 @@ class LightBackupPlugin(BasePlugin):
         if now_minutes < hour * 60 + minute:
             return False
 
-        today = date(local.tm_year, local.tm_mon, local.tm_mday).isoformat()
-        last_day = str(state.get("last_backup_day") or "")
-        if last_day == today:
+        last_at = float(state.get("last_backup_at") or 0.0)
+        # 「今天备过没」用时间感知判（跨夜也对：23:50 备过，次日 00:10 不算新的一天之外）
+        if last_at and interop.is_same_day(last_at, now):
             return False
 
-        last_at = float(state.get("last_backup_at") or 0.0)
-        min_interval = float(getattr(schedule_cfg, "min_interval_hours", 6.0) or 0.0) * 3600.0
-        if min_interval and last_at and now - last_at < min_interval:
+        min_interval = float(live.get("min_interval_hours") or 0.0) * 3600.0
+        if min_interval and last_at and (now - last_at) < min_interval:
             return False
 
         return True
@@ -188,23 +203,24 @@ class LightBackupPlugin(BasePlugin):
     async def _tick_job(self) -> None:
         """调度器回调：到点就备份。"""
         try:
+            live = self._live_schedule()
+            if not live.get("enabled"):
+                return
+
             service = self._service()
             state = await service.load_state()
             now = time.time()
-            if not self._due(now, state):
+            if not self._due(now, state, live):
                 return
 
             result = await service.export(reason="schedule")
             if not result.get("ok"):
                 logger.error(f"[light_backup] 定时备份失败：{result.get('error')}")
                 return
-
-            # 标记「今天已经备过」（写进状态，防止巡检反复触发）
-            local = time.localtime(now)
-            today = date(local.tm_year, local.tm_mon, local.tm_mday).isoformat()
-            state = await service.load_state()
-            state["last_backup_day"] = today
-            await service._save_state(state)  # noqa: SLF001 - 同一插件内部状态
+            logger.info(
+                f"[light_backup] 定时备份完成（{interop.describe_moment(now)}，"
+                f"每日 {live.get('daily_at')}）"
+            )
         except Exception as error:  # noqa: BLE001 - 巡检失败不打断下一轮
             logger.error(f"[light_backup] 巡检异常：{error}")
 
@@ -212,12 +228,15 @@ class LightBackupPlugin(BasePlugin):
         """启动后先备一份。"""
         await asyncio.sleep(3.0)  # 让 bot 自己先站稳
         try:
+            live = self._live_schedule()
+            if not live.get("run_on_startup"):
+                return
             service = self._service()
             state = await service.load_state()
             now = time.time()
-            min_interval = float(getattr(self.config.schedule, "min_interval_hours", 6.0) or 0.0)
+            min_interval = float(live.get("min_interval_hours") or 0.0)
             last_at = float(state.get("last_backup_at") or 0.0)
-            if min_interval and last_at and now - last_at < min_interval * 3600.0:
+            if min_interval and last_at and (now - last_at) < min_interval * 3600.0:
                 logger.info("[light_backup] 距上次备份太近，启动备份跳过")
                 return
             result = await service.export(reason="startup")

@@ -130,6 +130,7 @@ class BackupNowTool(BaseTool):
         manifest = result.get("manifest") or {}
         stats = manifest.get("stats") or {}
         secrets_cfg = manifest.get("secrets") or {}
+        time_ctx = manifest.get("time_context") or {}
         parts = [
             f"备份完成：{result.get('file')}",
             f"{_fmt_size(result.get('size'))}"
@@ -138,6 +139,8 @@ class BackupNowTool(BaseTool):
             f"｜配置 {stats.get('config_files', 0)} 个"
             f"｜耗时 {result.get('elapsed', 0)}s",
         ]
+        if time_ctx.get("described"):
+            parts.append(f"备份时刻：{time_ctx['described']}")
         if secrets_cfg.get("redacted_keys"):
             parts.append(f"配置里 {secrets_cfg['redacted_keys']} 处密钥已脱敏")
         if result.get("extra_copy"):
@@ -193,12 +196,17 @@ class CheckBackupStatusTool(BaseTool):
             lines.append(
                 f"最新：{status.get('newest_name')}"
                 f"（{_fmt_size(status.get('newest_size'))}，"
-                f"{_ago(status.get('newest_mtime'))}）"
+                f"{status.get('last_backup_ago') or _ago(status.get('newest_mtime'))}）"
             )
             if status.get("newest_summary"):
                 lines.append(f"内容：{status.get('newest_summary')}")
         else:
             lines.append("还没有备份过。")
+        if status.get("now_described"):
+            lines.append(f"现在：{status.get('now_described')}")
+        lines.append(f"自动备份：{'每天 ' + str(status.get('daily_at')) if status.get('schedule_enabled') else '已关闭'}")
+        if status.get("clock_ok") is False:
+            lines.append("注意：时间源不可靠，时间戳仅供参考。")
         if status.get("last_result") == "failed":
             lines.append(f"上次失败：{status.get('last_error')}")
 

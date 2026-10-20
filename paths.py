@@ -90,6 +90,11 @@ def config_dir(root: Path) -> Path:
     return root / CONFIG_REL
 
 
+def plugin_config_path(root: Path, plugin_name: str = "light_backup") -> Path:
+    """本插件的配置文件路径（热读用）。"""
+    return root / CONFIG_REL / "plugins" / plugin_name / "config.toml"
+
+
 def knowledge_dir(root: Path) -> Path:
     """知识库文档目录。"""
     return memory_dir(root) / "knowledges"

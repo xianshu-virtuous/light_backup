@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import interop
 from .collect import read_configs, read_knowledge
 from .paths import config_dir, detect_instance_root, metadata_db_path, chroma_sqlite_path
 from .store import (
@@ -121,6 +122,9 @@ def build_manifest(
     now = time.time()
     root = payload.instance_root
     stats = payload.memory.summary()
+    # 时间语义（软依赖 time_sense）：有它就能写出「2026-10-20 周二 04:30（深夜）」，
+    # 没有就退回朴素日期。``clock_ok`` 如实反映时间源可不可靠。
+    time_context = interop.snapshot_context(now)
     stats["config_files"] = payload.configs.file_count
     stats["knowledge_files"] = payload.knowledge.file_count
     stats["knowledge_chars"] = payload.knowledge.char_count
@@ -140,7 +144,11 @@ def build_manifest(
         "format_version": FORMAT_VERSION,
         "app_version": app_version,
         "created_at": now,
-        "created_at_text": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at_text": str(
+            time_context.get("described")
+            or datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
+        ),
+        "time_context": time_context,
         "tier": payload.tier,
         "vector_precision": payload.vector_precision if payload.vectors is not None else "",
         "instance": {

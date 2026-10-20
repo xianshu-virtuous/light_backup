@@ -24,6 +24,7 @@ from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.storage_api import load_json, save_json
 from src.app.plugin_system.base import BaseService
 
+from . import interop
 from .pack import (
     SUFFIX,
     ArchivePayload,
@@ -35,6 +36,7 @@ from .pack import (
 )
 from .paths import (
     detect_instance_root,
+    plugin_config_path,
     resolve_extra_dir,
     resolve_instance_root,
     resolve_output_dir,
@@ -113,6 +115,56 @@ class LightBackupService(BaseService):
         """解析备份输出目录。"""
         configured = str(getattr(self._section("target"), "output_dir", "") or "")
         return resolve_output_dir(root, configured)
+
+    def schedule_view(self) -> dict[str, Any]:
+        """当前生效的定时设置（**每轮重读配置文件**）。
+
+        为什么热读：改 ``daily_at`` 不该为了一个时间点去重启 bot。巡检本来每 5 分钟跑一次，
+        顺手重读一遍本插件自己的 ``config.toml`` 就行；读失败（文件被改坏、权限不对）
+        就退回启动时加载的配置，绝不让备份因为一个手滑的括号停摆。
+
+        Returns:
+            ``{"enabled", "daily_at", "min_interval_hours", "run_on_startup", "hot_reload"}``
+        """
+        schedule_cfg = self._section("schedule")
+        if schedule_cfg is None:
+            return {"enabled": False}
+
+        live: dict[str, Any] = {
+            "enabled": bool(getattr(schedule_cfg, "enabled", True)),
+            "daily_at": str(getattr(schedule_cfg, "daily_at", "04:30") or "04:30"),
+            "min_interval_hours": float(getattr(schedule_cfg, "min_interval_hours", 6.0) or 0.0),
+            "run_on_startup": bool(getattr(schedule_cfg, "run_on_startup", False)),
+            "hot_reload": bool(getattr(schedule_cfg, "hot_reload", True)),
+        }
+        if not live["hot_reload"]:
+            return live
+
+        try:
+            import tomllib
+
+            root = resolve_instance_root(str(getattr(self._section("target"), "instance_root", "") or ""))
+            path = plugin_config_path(root)
+            if not path.is_file():
+                return live
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            section = data.get("schedule")
+            if not isinstance(section, dict):
+                return live
+            if "enabled" in section:
+                live["enabled"] = bool(section["enabled"])
+            if "daily_at" in section:
+                live["daily_at"] = str(section["daily_at"] or live["daily_at"])
+            if "min_interval_hours" in section:
+                try:
+                    live["min_interval_hours"] = float(section["min_interval_hours"])
+                except (TypeError, ValueError):
+                    pass
+            if "run_on_startup" in section:
+                live["run_on_startup"] = bool(section["run_on_startup"])
+        except Exception as error:  # noqa: BLE001 - 读不到就用启动时的配置
+            logger.debug(f"[light_backup] 热读配置失败，沿用启动值：{error}")
+        return live
 
     # ── 状态 ─────────────────────────────────────────────────────
     async def load_state(self) -> dict[str, Any]:
@@ -298,12 +350,13 @@ class LightBackupService(BaseService):
     async def status(self) -> dict[str, Any]:
         """插件状态总览。"""
         archive_cfg = self._section("archive")
-        schedule_cfg = self._section("schedule")
+        live = self.schedule_view()
         root = self._instance_root()
         output_dir = self._output_dir(root)
         state = await self.load_state()
         items = await asyncio.to_thread(list_archives, output_dir)
         newest = items[0] if items else {}
+        last_at = float(state.get("last_backup_at") or 0.0)
         return {
             "instance_root": str(root),
             "output_dir": str(output_dir),
@@ -311,8 +364,16 @@ class LightBackupService(BaseService):
             "tier": str(getattr(archive_cfg, "tier", "full")),
             "vector_precision": str(getattr(archive_cfg, "vector_precision", "f16")),
             "keep_count": int(getattr(archive_cfg, "keep_count", 30) or 0),
-            "schedule_enabled": bool(getattr(schedule_cfg, "enabled", True)),
-            "daily_at": str(getattr(schedule_cfg, "daily_at", "04:30")),
+            "schedule_enabled": bool(live.get("enabled")),
+            "daily_at": str(live.get("daily_at") or "04:30"),
+            "min_interval_hours": float(live.get("min_interval_hours") or 0.0),
+            "hot_reload": bool(live.get("hot_reload")),
+            # ── 时间语义（软依赖 time_sense） ──────────────────────
+            "now_described": interop.describe_moment(),
+            "now_period": interop.period_of(),
+            "clock_ok": interop.clock_ok(),
+            "quiet_now": interop.is_quiet_now(),
+            "time_source": "time_sense" if interop.available() else "local",
             "archive_count": len(items),
             "newest_name": newest.get("name", ""),
             "newest_size": newest.get("size", 0),
@@ -323,7 +384,8 @@ class LightBackupService(BaseService):
             "total_size": sum(int(item.get("size") or 0) for item in items),
             "last_result": str(state.get("last_result") or ""),
             "last_error": str(state.get("last_error") or ""),
-            "last_backup_at": float(state.get("last_backup_at") or 0.0),
+            "last_backup_at": last_at,
+            "last_backup_ago": interop.humanize_ago(last_at, fallback="从没备份过"),
         }
 
 

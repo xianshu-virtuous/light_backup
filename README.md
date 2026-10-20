@@ -92,6 +92,7 @@ enabled = true
 daily_at = "04:30"
 run_on_startup = false
 min_interval_hours = 6.0
+hot_reload = true            # 改 daily_at 不用重启（默认开）
 
 [restore]
 allow = false                # v1.0 默认关闭，只做导出与校验
@@ -104,6 +105,31 @@ min_interval_minutes = 10    # 模型备份的最小间隔（分钟）
 
 ⚠️ **把 `output_dir` 放到另一个盘**。默认的 `../mofox_backup` 已经落在实例外面，
 但同一块盘坏掉照样一起没。
+
+### 改备份时间（不用重启）
+
+改 `config/plugins/light_backup/config.toml`：
+
+```toml
+[schedule]
+daily_at = "03:00"      # 改成你想要的时间
+```
+
+默认 `hot_reload = true`，最迟 **5 分钟**后的那次巡检就按新时间走，**不用重启**。
+改坏了（TOML 语法错）也不会出事：读不到就沿用启动时的值，日志里只留一行 debug。
+
+### 配合时间感知（装了 time_sense 就自动用）
+
+不用配置，探测到就生效：
+
+- **备份包自带时间语义**：manifest 里 `time_context` 记的是
+  `2026-10-20 周二 04:30（深夜）` + 时段 + `clock_ok`，不是干巴巴的 epoch 数字；
+- **「今天备份过没」按它的跨自然日判断**（23:50 备过，次日不算重复）；
+- **状态里显示「现在」**：`/备份 状态` 会多一行 `现在：2026-10-20 周二 12:45（中午）（时间感知）`；
+- **时钟不可信时如实标注**：系统时钟没校准的话，包里 `clock_ok: false`，状态里会提醒。
+
+**没装 time_sense 也能跑**，只是退回系统时间、措辞朴素一点（`2026-10-20 04:30`）。
+绝不会写进 `dependencies.plugins`——那会让插件在没装 time_sense 的机器上被框架静默剔除。
 
 ---
 

@@ -125,16 +125,23 @@ class BackupCommand(BaseCommand):
             + ("" if status.get("output_exists") else "（还没创建）"),
             f"档位：{status.get('tier')}"
             + (f"/{status.get('vector_precision')}" if status.get("tier") == "full" else ""),
-            f"自动：{'每' + str(status.get('daily_at')) if status.get('schedule_enabled') else '已关闭'}",
+            f"自动：{'每' + str(status.get('daily_at')) if status.get('schedule_enabled') else '已关闭'}"
+            + ("（改配置 5 分钟内生效）" if status.get("hot_reload") else "（改了要重载）"),
             f"已有：{status.get('archive_count')} 份，共 {_fmt_size(status.get('total_size') or 0)}",
         ]
         if status.get("newest_name"):
             lines.append(
                 f"最新：{status.get('newest_name')}"
-                f"（{_fmt_size(status.get('newest_size') or 0)}，{_ago(status.get('newest_mtime') or 0)}）"
+                f"（{_fmt_size(status.get('newest_size') or 0)}，"
+                f"{status.get('last_backup_ago') or _ago(status.get('newest_mtime') or 0)}）"
             )
+        if status.get("now_described"):
+            source = "（时间感知）" if status.get("time_source") == "time_sense" else ""
+            lines.append(f"现在：{status.get('now_described')}{source}")
         if last:
-            lines.append(f"上次：{_fmt_time(last)} {_ago(last)} {result}")
+            lines.append(f"上次：{status.get('last_backup_ago') or _ago(last)} {result}".strip())
+        if status.get("clock_ok") is False:
+            lines.append("⚠️ 时间源不可靠（系统时钟没校准），备份时间戳仅供参考")
         if result == "failed" and status.get("last_error"):
             lines.append(f"上次错误：{status.get('last_error')}")
         lines.append("命令：/备份 现在｜列表｜校验")

@@ -295,6 +295,87 @@ def main() -> int:
     check("默认备份目录在实例外", resolved.parent == Path("C:/fake"), str(resolved))
     check("默认备份目录名 mofox_backup", resolved.name == "mofox_backup", resolved.name)
 
+    # ── 9. 定时热读（改配置文件不重启也生效） ───────────────────
+    section("9. 定时热读：改 config.toml 立刻生效")
+    import tempfile
+
+    hot_root = Path(tempfile.mkdtemp(prefix="light_backup_hot_"))
+    try:
+        plugin_cfg_dir = hot_root / "config" / "plugins" / "light_backup"
+        plugin_cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file = plugin_cfg_dir / "config.toml"
+
+        hot_config = LightBackupConfig()
+        hot_config.target.instance_root = str(hot_root)
+        hot_plugin = plugin_class(hot_config)
+        hot_service = LightBackupService(hot_plugin)
+
+        # 没有文件 → 用启动时的配置值
+        base_view = hot_service.schedule_view()
+        check(
+            "缺配置文件时用启动值",
+            base_view.get("daily_at") == "04:30",
+            str(base_view.get("daily_at")),
+        )
+
+        # 写一个新时间 → 立刻读到
+        cfg_file.write_text(
+            '[schedule]\nenabled = true\ndaily_at = "03:15"\n'
+            "min_interval_hours = 2.0\nrun_on_startup = true\nhot_reload = true\n",
+            encoding="utf-8",
+        )
+        live = hot_service.schedule_view()
+        check("热读到新时间 03:15", live.get("daily_at") == "03:15", str(live.get("daily_at")))
+        check(
+            "热读到新间隔 2.0",
+            live.get("min_interval_hours") == 2.0,
+            str(live.get("min_interval_hours")),
+        )
+        check("热读到 run_on_startup", live.get("run_on_startup") is True)
+
+        # 再改一次 → 仍然立刻生效
+        cfg_file.write_text('[schedule]\ndaily_at = "05:45"\nhot_reload = true\n', encoding="utf-8")
+        check("第二次改动仍生效", hot_service.schedule_view().get("daily_at") == "05:45")
+
+        # 文件写坏了 → 退回启动值，不能崩
+        cfg_file.write_text("这不是合法的 toml [[[", encoding="utf-8")
+        broken = hot_service.schedule_view()
+        check(
+            "配置写坏时退回启动值",
+            broken.get("daily_at") == "04:30",
+            str(broken.get("daily_at")),
+        )
+
+        # hot_reload=false → 不读文件
+        no_hot_config = LightBackupConfig()
+        no_hot_config.target.instance_root = str(hot_root)
+        no_hot_config.schedule.hot_reload = False
+        no_hot_service = LightBackupService(plugin_class(no_hot_config))
+        cfg_file.write_text('[schedule]\ndaily_at = "07:00"\n', encoding="utf-8")
+        check(
+            "hot_reload=false 时不读文件",
+            no_hot_service.schedule_view().get("daily_at") == "04:30",
+            str(no_hot_service.schedule_view().get("daily_at")),
+        )
+    finally:
+        import shutil as _shutil
+
+        _shutil.rmtree(hot_root, ignore_errors=True)
+
+    # ── 10. 时间感知桥接（软依赖，拿不到必须回落） ──────────────
+    section("10. 时间感知桥接（软依赖回落）")
+    from light_backup import interop
+
+    check(
+        "时间描述可用（无论 time_sense 在不在）",
+        len(interop.describe_moment()) >= 10,
+        interop.describe_moment(),
+    )
+    check("来源标注清楚", interop.snapshot_context().get("source") in {"time_sense", "local"})
+    check("clock_ok 是布尔", isinstance(interop.clock_ok(), bool))
+    check("is_quiet_now 是布尔", isinstance(interop.is_quiet_now(), bool))
+    check("可用性探测不抛异常", isinstance(interop.available(), bool))
+
     print("-" * 72)
     total = _passed + len(_failures)
     if _failures:

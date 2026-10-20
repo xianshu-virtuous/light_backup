@@ -399,7 +399,43 @@ def main() -> int:
             raised = True
         check("记忆库缺失时抛 StoreError", raised)
 
-        # ── 13. 列表 ─────────────────────────────────────────────
+        # ── 14. 时间桥接（没有 time_sense 时的回落路径） ──────────
+        import time as _t
+
+        from light_backup import interop
+
+        check("时刻描述不为空", bool(interop.describe_moment()))
+        check(
+            "指定时刻能描述",
+            "2026" in interop.describe_moment(1790000000.0),
+            interop.describe_moment(1790000000.0),
+        )
+        check("多久以前能算", "前" in interop.humanize_ago(_t.time() - 120))
+        check(
+            "从没备份过的兜底",
+            interop.humanize_ago(0, fallback="从没备份过") == "从没备份过",
+        )
+        check("跨自然日计算", interop.days_since(_t.time() - 3 * 86400) >= 2, str(interop.days_since(_t.time() - 3 * 86400)))
+        check("同一天判断", interop.is_same_day(_t.time(), _t.time()) is True)
+        check(
+            "跨五天不是同一天",
+            interop.is_same_day(_t.time(), _t.time() - 5 * 86400) is False,
+        )
+        context = interop.snapshot_context()
+        check(
+            "时间上下文标了来源",
+            context.get("source") in {"time_sense", "local"},
+            str(context.get("source")),
+        )
+        check("时间上下文有 clock_ok 布尔", isinstance(context.get("clock_ok"), bool))
+        check("manifest 带时间上下文", bool(manifest.get("time_context")))
+        check("manifest 时间描述非空", bool(manifest.get("created_at_text")))
+        check(
+            "备份包里记了时刻",
+            (manifest.get("time_context") or {}).get("described") == manifest.get("created_at_text"),
+        )
+
+        # ── 15. 列表 ─────────────────────────────────────────────
         listing = pack.list_archives(workdir / "out")
         check("列表返回条目", len(listing) >= 4, str(len(listing)))
         check("列表按时间从新到旧", listing[0]["mtime"] >= listing[-1]["mtime"])
