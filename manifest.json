@@ -2,7 +2,7 @@
   "name": "light_backup",
   "display_name": "轻量备份",
   "version": "1.0.0",
-  "description": "把「配置 + 记忆」导出成可移植的 .lbk 包。记忆按逻辑结构导出（638 条记录级别的标题/正文/标签/关系/时间线 + 1024 维向量），剔掉 Chroma 的运行态垃圾（append-only 队列历史、FTS 索引、HNSW 图）后，体积约为全量的 1/8；向量用 float16 存，余弦相似度误差 < 0.1%。配置里的 api_key/密码/令牌默认脱敏成 <redacted>，历史 .bak 文件不算配置。自带校验：每份包逐项核对哈希、记录数、标签引用完整性与向量长度，能明确告诉你「这份包能不能用来还原」。默认备份到实例外面的 ../mofox_backup，按天自动跑，只读实例数据、不改记忆库。",
+  "description": "把「配置 + 记忆」导出成可移植的 .lbk 包。记忆按逻辑结构导出（638 条记录级别的标题/正文/标签/关系/时间线 + 1024 维向量），剔掉 Chroma 的运行态垃圾（append-only 队列历史、FTS 索引、HNSW 图）后，体积约为全量的 1/8；向量用 float16 存，余弦相似度误差 < 0.1%。配置里的 api_key/密码/令牌默认脱敏成 <redacted>，历史 .bak 文件不算配置。自带校验：每份包逐项核对哈希、记录数、标签引用完整性与向量长度，能明确告诉你「这份包能不能用来还原」。默认备份到实例外面的 ../mofox_backup，按天自动跑，只读实例数据、不改记忆库。命令 /备份 给人用；工具 backup_now、check_backup_status 给模型用（默认只在私聊暴露，10 分钟内不重复备份）。",
   "author": "Aemeath",
   "license": "MIT",
   "dependencies": {
@@ -19,6 +19,18 @@
     {
       "component_type": "command",
       "component_name": "备份",
+      "dependencies": [],
+      "enabled": true
+    },
+    {
+      "component_type": "tool",
+      "component_name": "backup_now",
+      "dependencies": [],
+      "enabled": true
+    },
+    {
+      "component_type": "tool",
+      "component_name": "check_backup_status",
       "dependencies": [],
       "enabled": true
     }

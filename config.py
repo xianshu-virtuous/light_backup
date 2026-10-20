@@ -187,6 +187,34 @@ class LightBackupConfig(BaseConfig):
             ),
         )
 
+    @config_section("tools")
+    class ToolsSection(SectionBase):
+        """给模型的主动备份工具（tool 组件）。"""
+
+        enabled: bool = Field(
+            default=True,
+            description=(
+                "是否把备份工具暴露给模型（``backup_now`` / ``check_backup_status``）。\n"
+                "关掉后模型看不见这两个工具，但 ``/备份`` 命令照常可用。"
+            ),
+        )
+        allow_export: bool = Field(
+            default=True,
+            description=(
+                "是否允许**模型自己**触发备份（``backup_now``）。\n"
+                "关掉后模型只能查状态，不能写盘；要备份请敲 ``/备份 现在``。"
+            ),
+        )
+        min_interval_minutes: float = Field(
+            default=10.0,
+            description=(
+                "模型主动备份的最小间隔（分钟）。太频繁没意义，还会把备份目录刷满。\n"
+                "被拦下时模型会被告知「让主人发 /备份 现在」，不会静默失败。"
+            ),
+            ge=0.0,
+            le=1440.0,
+        )
+
     # ⚠️ 每个小节都必须在配置类里**显式声明成字段**，否则 pydantic 不会收集它，
     # ``config.plugin`` 直接 AttributeError（框架 BaseConfig 的硬要求，别省）。
     plugin: PluginSection = Field(default_factory=PluginSection)
@@ -195,3 +223,4 @@ class LightBackupConfig(BaseConfig):
     secrets: SecretsSection = Field(default_factory=SecretsSection)
     schedule: ScheduleSection = Field(default_factory=ScheduleSection)
     restore: RestoreSection = Field(default_factory=RestoreSection)
+    tools: ToolsSection = Field(default_factory=ToolsSection)

@@ -140,8 +140,14 @@ def main() -> int:
     check("声明的组件都有实现", declared_set <= actual, f"缺 {sorted(declared_set - actual)}")
     check("实现的组件都已声明", actual <= declared_set, f"多 {sorted(actual - declared_set)}")
     check(
-        "包含服务与命令两个组件",
-        actual == {("service", "core"), ("command", "备份")},
+        "包含服务/命令/两个工具",
+        actual
+        == {
+            ("service", "core"),
+            ("command", "备份"),
+            ("tool", "backup_now"),
+            ("tool", "check_backup_status"),
+        },
         str(sorted(actual)),
     )
 
@@ -169,8 +175,71 @@ def main() -> int:
     for name in ("handle_now", "handle_list", "handle_verify", "handle_status"):
         check(f"有 {name}", hasattr(BackupCommand, name))
 
-    # ── 5. 配置默认值 ───────────────────────────────────────────
-    section("5. 配置默认值（保守口径）")
+    # ── 5. 工具组件（给模型用） ─────────────────────────────────
+    section("5. 工具组件（模型主动备份）")
+    from light_backup.tools import BackupNowTool, CheckBackupStatusTool
+
+    check("备份工具名", BackupNowTool.name == "backup_now", BackupNowTool.name)
+    check("状态工具名", CheckBackupStatusTool.name == "check_backup_status", CheckBackupStatusTool.name)
+    check(
+        "只读工具名带 check 前缀（语义清晰）",
+        CheckBackupStatusTool.name.startswith("check"),
+        CheckBackupStatusTool.name,
+    )
+    for tool_cls in (BackupNowTool, CheckBackupStatusTool):
+        check(f"{tool_cls.name} 有 tool_name", bool(getattr(tool_cls, "tool_name", "")))
+        check(f"{tool_cls.name} 有描述", len(getattr(tool_cls, "description", "")) > 20)
+        chat_type = str(getattr(tool_cls, "chat_type", ""))
+        check(
+            f"{tool_cls.name} 只在私聊暴露（记忆是私事）",
+            "private" in chat_type.lower(),
+            chat_type,
+        )
+        try:
+            schema = tool_cls.to_schema()
+            function = schema.get("function") or {}
+            check(f"{tool_cls.name} 能生成 schema", function.get("name") == f"tool-{tool_cls.name}",
+                  str(function.get("name")))
+            check(f"{tool_cls.name} schema 有参数表", isinstance(function.get("parameters"), dict))
+        except Exception as error:  # noqa: BLE001
+            check(f"{tool_cls.name} 能生成 schema", False, repr(error))
+
+    try:
+        import inspect as _inspect
+
+        signature = _inspect.signature(BackupNowTool.execute)
+        params = [name for name in signature.parameters if name != "self"]
+        check("backup_now 有 reason 参数", "reason" in params, str(params))
+        check("backup_now 的 reason 参数可选", signature.parameters["reason"].default == "")
+        status_signature = _inspect.signature(CheckBackupStatusTool.execute)
+        status_params = [name for name in status_signature.parameters if name != "self"]
+        check("check_backup_status 有 verify_newest 参数", "verify_newest" in status_params)
+        check("execute 是协程", _inspect.iscoroutinefunction(BackupNowTool.execute))
+    except Exception as error:  # noqa: BLE001
+        check("能解析工具参数签名", False, repr(error))
+
+    # 关掉 tools.enabled 后两个工具都不注册，命令仍在
+    no_tools_config = LightBackupConfig()
+    no_tools_config.tools.enabled = False
+    no_tools_plugin = plugin_class(no_tools_config)
+    no_tools_components = {
+        (str(getattr(cls, "component_type", "")), str(getattr(cls, "name", "")))
+        for cls in no_tools_plugin.get_components()
+    }
+    check(
+        "tools.enabled=false 时不注册工具",
+        ("tool", "backup_now") not in no_tools_components
+        and ("tool", "check_backup_status") not in no_tools_components,
+        str(sorted(no_tools_components)),
+    )
+    check(
+        "关掉工具后命令还在",
+        ("command", "备份") in no_tools_components,
+        str(sorted(no_tools_components)),
+    )
+
+    # ── 6. 配置默认值 ───────────────────────────────────────────
+    section("6. 配置默认值（保守口径）")
     check("默认档位 full（含向量）", config.archive.tier == "full", config.archive.tier)
     check("默认向量精度 f16", config.archive.vector_precision == "f16", config.archive.vector_precision)
     check("默认密钥脱敏", config.secrets.mode == "redact", config.secrets.mode)
@@ -184,6 +253,13 @@ def main() -> int:
     )
     check("默认开启自动备份", config.schedule.enabled is True)
     check("默认保留 30 份", config.archive.keep_count == 30, str(config.archive.keep_count))
+    check("默认暴露备份工具", config.tools.enabled is True, str(config.tools.enabled))
+    check("默认允许模型主动备份", config.tools.allow_export is True, str(config.tools.allow_export))
+    check(
+        "默认模型备份限流 10 分钟",
+        config.tools.min_interval_minutes == 10.0,
+        str(config.tools.min_interval_minutes),
+    )
 
     # ── 6. 服务组件 ─────────────────────────────────────────────
     section("6. 服务组件")

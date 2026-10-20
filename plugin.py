@@ -27,6 +27,7 @@ from src.kernel.scheduler import TriggerType, get_unified_scheduler
 from .commands import BackupCommand
 from .config import LightBackupConfig
 from .service import LightBackupService
+from .tools import BackupNowTool, CheckBackupStatusTool
 
 logger = get_logger("light_backup")
 
@@ -66,6 +67,7 @@ class LightBackupPlugin(BasePlugin):
         "记忆按逻辑结构导出（记录/标签/关系/时间线 + 1024 维向量），"
         "剔掉 chroma 的运行态垃圾后体积约为全量的 1/8；配置里的密钥默认脱敏。"
         "自带校验：每条包逐项核对哈希、条数、引用完整性与向量长度。"
+        "命令 /备份 给人用，工具 backup_now / check_backup_status 给模型用。"
     )
     plugin_version: str = "1.0.0"
     configs: list[type] = [LightBackupConfig]
@@ -84,7 +86,12 @@ class LightBackupPlugin(BasePlugin):
         """返回组件（插件被关掉时整体下线）。"""
         if isinstance(self.config, LightBackupConfig) and not self.config.plugin.enabled:
             return []
-        return [LightBackupService, BackupCommand]
+
+        components: list[type] = [LightBackupService, BackupCommand]
+        # 工具按配置开关：关掉后模型看不见，命令照常可用。
+        if not isinstance(self.config, LightBackupConfig) or self.config.tools.enabled:
+            components.extend([BackupNowTool, CheckBackupStatusTool])
+        return components
 
     async def on_plugin_loaded(self) -> None:
         """插件加载完成：按配置注册定时巡检，必要时启动后先备一份。"""
