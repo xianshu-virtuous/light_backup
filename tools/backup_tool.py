@@ -196,7 +196,7 @@ class CheckBackupStatusTool(BaseTool):
             lines.append(
                 f"最新：{status.get('newest_name')}"
                 f"（{_fmt_size(status.get('newest_size'))}，"
-                f"{status.get('last_backup_ago') or _ago(status.get('newest_mtime'))}）"
+                f"{status.get('newest_ago') or _ago(status.get('newest_mtime'))}）"
             )
             if status.get("newest_summary"):
                 lines.append(f"内容：{status.get('newest_summary')}")

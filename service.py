@@ -36,10 +36,12 @@ from .pack import (
 )
 from .paths import (
     detect_instance_root,
+    metadata_db_path,
     plugin_config_path,
     resolve_extra_dir,
     resolve_instance_root,
     resolve_output_dir,
+    vector_db_path,
 )
 from .verify import VerifyReport, describe_manifest, verify_archive
 
@@ -347,8 +349,202 @@ class LightBackupService(BaseService):
                 candidate = fallback
         return await asyncio.to_thread(verify_archive, candidate, deep=deep)
 
+    def _resolve_archive(self, name_or_path: str, output_dir: Path) -> Path:
+        """把「包名或路径」解析成实际文件。
+
+        允许三种写法：绝对路径、目录内文件名、省略 ``.lbk`` 后缀的文件名。
+        """
+        raw = str(name_or_path or "").strip()
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = output_dir / raw
+        if candidate.is_file():
+            return candidate
+        with_suffix = output_dir / f"{raw}{SUFFIX}"
+        if with_suffix.is_file():
+            return with_suffix
+        if candidate.suffix.lower() != SUFFIX:
+            alt = candidate.with_suffix(SUFFIX)
+            if alt.is_file():
+                return alt
+        return candidate
+
+    async def restore(
+        self,
+        name_or_path: str,
+        *,
+        dry_run: bool = True,
+        merge_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """还原一份包里的记忆。
+
+        只还原**记忆**（记录 + 标签 + 便签 + 向量）。配置和知识库虽然也在包里，
+        但**不写回去**——脱敏过的配置写回去等于毁掉密钥，知识库跟人设强相关。
+        这两样在预览里会明确列出来。
+
+        Args:
+            name_or_path: 包名（输出目录内）或绝对路径。
+            dry_run: ``True`` 只出计划不落笔（默认）。
+            merge_mode: ``skip`` / ``overwrite``；``None`` 用配置里的。
+
+        Returns:
+            ``{"ok", "dry_run", "archive", "plan", "result", "error", "warnings"}``
+        """
+        from .restore import (
+            MERGE_SKIP,
+            apply_memory,
+            apply_vectors,
+            plan_restore,
+            verify_restored,
+        )
+        from .verify import load_archive, verify_archive
+
+        restore_cfg = self._section("restore")
+        root = self._instance_root()
+        output_dir = self._output_dir(root)
+        path = self._resolve_archive(name_or_path, output_dir)
+        if not path.is_file():
+            return {"ok": False, "error": f"找不到这个包：{path}"}
+
+        lock = self._get_lock()
+        if lock.locked():
+            return {"ok": False, "error": "有备份/还原正在跑，等它结束"}
+
+        async with lock:
+            report = await asyncio.to_thread(verify_archive, path, deep=True)
+            if not report.ok:
+                detail = "；".join(
+                    f"{item.label}：{item.detail}" for item in report.failures[:4]
+                )
+                return {"ok": False, "error": f"包校验不通过：{detail}"}
+
+            payload = await asyncio.to_thread(load_archive, path)
+            mode = str(merge_mode or getattr(restore_cfg, "merge_mode", MERGE_SKIP) or MERGE_SKIP)
+            manifest = report.manifest or {}
+            db_path = metadata_db_path(root)
+
+            plan = await asyncio.to_thread(
+                plan_restore,
+                payload.memory,
+                db_path,
+                merge_mode=mode,
+                config_files=payload.configs.file_count,
+                knowledge_files=payload.knowledge.file_count,
+                archive_name=path.name,
+                archive_time=str(manifest.get("created_at_text") or ""),
+            )
+
+            warnings = list(plan.warnings)
+            if plan.config_files:
+                warnings.append(f"包里 {plan.config_files} 个配置**不会**还原（脱敏字段会毁掉密钥）")
+            if plan.knowledge_files:
+                warnings.append(f"包里 {plan.knowledge_files} 个知识库文档**不会**还原")
+
+            base = {
+                "archive": str(path),
+                "plan": {
+                    "summary": plan.summary(),
+                    "records_total": plan.records_total,
+                    "records_new": plan.records_new,
+                    "records_existing": plan.records_existing,
+                    "will_write": plan.will_write,
+                    "tags": plan.tags_total,
+                    "vectors": plan.vectors_total,
+                    "memos": plan.memos_total,
+                    "merge_mode": plan.merge_mode,
+                    "conflicts": plan.conflict_samples,
+                    "archive_time": plan.archive_time,
+                },
+                "warnings": warnings,
+            }
+
+            if dry_run:
+                return {"ok": True, "dry_run": True, **base}
+
+            if not bool(getattr(restore_cfg, "allow", False)):
+                return {
+                    "ok": False,
+                    "dry_run": False,
+                    "error": (
+                        "还原没开启：配置里 restore.allow 还是 false。\n"
+                        "确认要用的话把 config/plugins/light_backup/config.toml 的 "
+                        "restore.allow 改成 true（改完 5 分钟内生效）。"
+                    ),
+                    **base,
+                }
+
+            started = time.time()
+            snapshot_path = ""
+            if bool(getattr(restore_cfg, "snapshot_before_restore", True)):
+                snapshot = await self.export(reason="pre-restore")
+                if snapshot.get("ok"):
+                    snapshot_path = str(snapshot.get("file") or "")
+                else:
+                    warnings.append(f"还原前快照失败：{snapshot.get('error')}")
+
+            memory_result = await asyncio.to_thread(
+                apply_memory, payload.memory, db_path, merge_mode=mode
+            )
+            vector_result = None
+            if payload.vectors is not None and payload.vectors.count:
+                vector_result = await apply_vectors(
+                    payload.vectors, vector_db_path(root), merge_mode=mode
+                )
+
+            passed, problems = await asyncio.to_thread(
+                verify_restored, payload.memory, db_path
+            )
+            errors = list(memory_result.errors)
+            if vector_result is not None:
+                errors.extend(vector_result.errors)
+            errors.extend(problems)
+
+            elapsed = round(time.time() - started, 2)
+            result = {
+                "written_records": memory_result.written_records,
+                "skipped_records": memory_result.skipped_records,
+                "written_tags": memory_result.written_tags,
+                "written_vectors": (
+                    vector_result.written_vectors if vector_result is not None else 0
+                ),
+                "written_memos": memory_result.written_memos,
+                "elapsed": elapsed,
+                "snapshot": snapshot_path,
+            }
+
+            state = await self.load_state()
+            history = list(state.get("history") or [])
+            history.insert(
+                0,
+                {
+                    "at": time.time(),
+                    "action": "restore",
+                    "file": str(path),
+                    "written": memory_result.written_records,
+                    "elapsed": elapsed,
+                },
+            )
+            state["history"] = history[:20]
+            state["last_restore_at"] = time.time()
+            state["last_restore_file"] = str(path)
+            state["last_restore_written"] = memory_result.written_records
+            state["last_result"] = "restored" if (passed and not errors) else "restore-partial"
+            await self._save_state(state)
+
+            ok = passed and not memory_result.errors and not (vector_result and vector_result.errors)
+            logger.info(
+                f"[light_backup] 还原 {path.name}：写入 {memory_result.written_records} 条记忆 / "
+                f"{result['written_vectors']} 条向量，跳过 {memory_result.skipped_records} 条（{elapsed}s）"
+            )
+            return {
+                "ok": ok,
+                "dry_run": False,
+                "result": result,
+                "errors": errors,
+                **base,
+            }
+
     async def status(self) -> dict[str, Any]:
-        """插件状态总览。"""
         archive_cfg = self._section("archive")
         live = self.schedule_view()
         root = self._instance_root()
@@ -378,6 +574,10 @@ class LightBackupService(BaseService):
             "newest_name": newest.get("name", ""),
             "newest_size": newest.get("size", 0),
             "newest_mtime": newest.get("mtime", 0.0),
+            # 「最新那份有多久」必须按**文件时间**算，不能借 last_backup_ago：
+            # 手工放进目录的包、或状态被清过时，两者会对不上（实测踩过：
+            # 文件明明在，却显示「从没备份过」）。
+            "newest_ago": interop.humanize_ago(newest.get("mtime") if newest else 0, fallback=""),
             "newest_summary": describe_manifest(newest.get("manifest") or {})
             if newest
             else "",

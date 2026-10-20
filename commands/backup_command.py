@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -32,10 +33,12 @@ _HELP = """【轻量备份】
 /备份 现在         立刻备份一份
 /备份 列表         最近几份包
 /备份 校验 [名字]  校验包（默认最新）
+/备份 还原 <包名> [确认]  还原记忆（不带确认＝只预览）
 /备份 帮助         本帮助
 
 备份内容：记忆（含向量）+ 配置（密钥脱敏）+ 知识库
-还原开关默认关闭，v1.0 只做导出与校验。"""
+还原只写记忆；配置与知识库不还原（脱敏字段会毁掉密钥）。
+还原默认关闭，要在配置里把 restore.allow 改成 true。"""
 
 
 def _fmt_size(size: int) -> str:
@@ -133,7 +136,7 @@ class BackupCommand(BaseCommand):
             lines.append(
                 f"最新：{status.get('newest_name')}"
                 f"（{_fmt_size(status.get('newest_size') or 0)}，"
-                f"{status.get('last_backup_ago') or _ago(status.get('newest_mtime') or 0)}）"
+                f"{status.get('newest_ago') or _ago(status.get('newest_mtime') or 0)}）"
             )
         if status.get("now_described"):
             source = "（时间感知）" if status.get("time_source") == "time_sense" else ""
@@ -242,6 +245,74 @@ class BackupCommand(BaseCommand):
         await self._reply(text)
         return report.ok, text
 
+    @cmd_route("还原")
+    async def handle_restore(self, name: str = "", confirm: str = "") -> tuple[bool, str]:
+        """还原一份包里的记忆（默认只预览）。"""
+        service = self._service()
+        target = str(name or "").strip()
+        if not target:
+            text = (
+                "用法：/备份 还原 <包名> [确认]\n"
+                "不带「确认」＝只出预览，一条都不会写。\n"
+                "看有哪些包：/备份 列表"
+            )
+            await self._reply(text)
+            return False, text
+
+        dry_run = str(confirm or "").strip().lower() not in ("确认", "confirm", "yes", "y")
+        result = await service.restore(target, dry_run=dry_run)
+
+        if not result.get("ok") and result.get("error"):
+            text = f"还原失败：{result['error']}"
+            plan = result.get("plan") or {}
+            if plan.get("summary"):
+                text += f"\n包里内容：{plan['summary']}"
+            await self._reply(text)
+            return False, text
+
+        plan = result.get("plan") or {}
+        warnings = result.get("warnings") or []
+
+        if result.get("dry_run"):
+            lines = [
+                f"【还原预览】{Path(result.get('archive') or '').name}",
+                f"包时刻：{plan.get('archive_time') or '未知'}",
+                f"包里 {plan.get('records_total')} 条记忆"
+                f"（新 {plan.get('records_new')} / 已存在 {plan.get('records_existing')}）"
+                f"｜标签 {plan.get('tags')} 条｜向量 {plan.get('vectors')} 条",
+                f"合并策略：{plan.get('merge_mode')} → 会写入 {plan.get('will_write')} 条记忆",
+            ]
+            if plan.get("conflicts"):
+                lines.append(f"冲突示例：{', '.join(plan['conflicts'][:3])}")
+            for item in warnings:
+                lines.append(f"⚠️ {item}")
+            lines.append(f"\n确认要写的话：/备份 还原 {target} 确认")
+            text = "\n".join(lines)
+            await self._reply(text)
+            return True, text
+
+        written = result.get("result") or {}
+        lines = [
+            f"✅ 还原完成：{Path(result.get('archive') or '').name}",
+            f"写入 {written.get('written_records', 0)} 条记忆"
+            f"｜标签 {written.get('written_tags', 0)} 条"
+            f"｜向量 {written.get('written_vectors', 0)} 条"
+            f"｜跳过 {written.get('skipped_records', 0)} 条"
+            f"｜耗时 {written.get('elapsed', 0)}s",
+        ]
+        if written.get("snapshot"):
+            lines.append(f"还原前快照：{Path(str(written['snapshot'])).name}")
+        errors = result.get("errors") or []
+        for item in errors[:5]:
+            lines.append(f"✗ {item}")
+        for item in warnings:
+            lines.append(f"⚠️ {item}")
+        if not errors:
+            lines.append("建议重启一次 bot，让记忆服务重新加载。")
+        text = "\n".join(lines)
+        await self._reply(text)
+        return not errors, text
+
     @cmd_route("帮助")
     async def handle_help(self) -> tuple[bool, str]:
         """帮助。"""
@@ -262,6 +333,11 @@ class BackupCommand(BaseCommand):
     async def handle_verify_en(self, name: str = "") -> tuple[bool, str]:
         """英文别名：verify。"""
         return await self.handle_verify(name)
+
+    @cmd_route("restore")
+    async def handle_restore_en(self, name: str = "", confirm: str = "") -> tuple[bool, str]:
+        """英文别名：restore。"""
+        return await self.handle_restore(name, confirm)
 
     @cmd_route("help")
     async def handle_help_en(self) -> tuple[bool, str]:

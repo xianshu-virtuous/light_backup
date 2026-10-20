@@ -80,6 +80,17 @@ def chroma_db_path(root: Path) -> Path:
     return root / CHROMA_REL
 
 
+def vector_db_path(root: Path) -> Path:
+    """``get_vector_db_service()`` 要的那个路径。
+
+    注意别跟 :func:`chroma_db_path` 搞混：实测 ``booku_memory`` 配的是
+    ``data/chroma_db/booku_memory``（Chroma 会在这个目录下直接放 ``chroma.sqlite3``），
+    外层的 ``data/chroma_db`` 只是它的上一级。传错会**新建一个空库**，
+    表现就是「还原成功但一条都检索不到」。
+    """
+    return chroma_db_path(root) / "booku_memory"
+
+
 def chroma_sqlite_path(root: Path) -> Path:
     """Chroma 的 SQLite 主库（``<chroma>/booku_memory/chroma.sqlite3``）。"""
     return chroma_db_path(root) / "booku_memory" / "chroma.sqlite3"

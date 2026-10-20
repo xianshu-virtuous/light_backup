@@ -435,7 +435,73 @@ def main() -> int:
             (manifest.get("time_context") or {}).get("described") == manifest.get("created_at_text"),
         )
 
-        # ── 15. 列表 ─────────────────────────────────────────────
+        # ── 15. 还原（只写记忆，配置与知识库不碰） ────────────────
+        from light_backup import restore as restore_mod
+
+        source_snapshot = store.read_memory(paths.metadata_db_path(instance))
+        target_db = workdir / "restore_target" / "metadata.db"
+        _make_memory_db(target_db, records=0)
+
+        plan = restore_mod.plan_restore(source_snapshot, target_db, merge_mode="skip")
+        check("计划：全部是新的", plan.records_new == 3, str(plan.records_new))
+        check("计划：会写入 3 条", plan.will_write == 3, str(plan.will_write))
+        check("计划：包里内容摘要非空", bool(plan.summary()))
+
+        written = restore_mod.apply_memory(source_snapshot, target_db, merge_mode="skip")
+        check("还原写入 3 条记忆", written.written_records == 3, str(written.written_records))
+        check("还原写入 6 条标签", written.written_tags == 6, str(written.written_tags))
+        check("还原结果 ok", written.ok, str(written.errors))
+
+        passed, problems = restore_mod.verify_restored(source_snapshot, target_db)
+        check("还原后自检通过", passed, str(problems))
+
+        # 再跑一次 skip → 全跳过，不重复写
+        again = restore_mod.apply_memory(source_snapshot, target_db, merge_mode="skip")
+        check(
+            "skip 第二次全跳过",
+            again.written_records == 0 and again.skipped_records == 3,
+            f"写 {again.written_records} / 跳 {again.skipped_records}",
+        )
+
+        # 已有数据时 plan 能识别出「已存在」
+        plan2 = restore_mod.plan_restore(source_snapshot, target_db, merge_mode="skip")
+        check("计划识别已存在 3 条", plan2.records_existing == 3, str(plan2.records_existing))
+        check("skip 策略下会提示跳过", any("跳过" in item for item in plan2.warnings), str(plan2.warnings))
+
+        # overwrite → 重写，且标签不翻倍
+        overwrite = restore_mod.apply_memory(source_snapshot, target_db, merge_mode="overwrite")
+        check("overwrite 重写 3 条", overwrite.written_records == 3, str(overwrite.written_records))
+        conn = sqlite3.connect(target_db)
+        try:
+            tag_count = conn.execute("select count(*) from booku_memory_tags").fetchone()[0]
+        finally:
+            conn.close()
+        check("overwrite 不会让标签翻倍", tag_count == 6, str(tag_count))
+
+        # 非法合并策略必须报错（不许默默按 skip 处理）
+        raised = False
+        try:
+            restore_mod.apply_memory(source_snapshot, target_db, merge_mode="keep_both")
+        except restore_mod.RestoreError:
+            raised = True
+        check("非法合并策略抛 RestoreError", raised)
+
+        # 缺 memory_id 的记录要跳过并报出来，不能静默
+        bad_snapshot = store.MemorySnapshot(records=[{"memory_id": "", "content": "x"}], tags=[])
+        bad_result = restore_mod.apply_memory(bad_snapshot, target_db)
+        check(
+            "缺 memory_id 的记录被跳过并报错",
+            bad_result.written_records == 0 and bool(bad_result.errors),
+            str(bad_result.errors),
+        )
+
+        # 目标库不存在时，plan 要给出警告而不是崩
+        ghost_plan = restore_mod.plan_restore(
+            source_snapshot, workdir / "no_such_dir" / "metadata.db"
+        )
+        check("目标库不存在时给警告", bool(ghost_plan.warnings), str(ghost_plan.warnings))
+
+        # ── 16. 列表 ─────────────────────────────────────────────
         listing = pack.list_archives(workdir / "out")
         check("列表返回条目", len(listing) >= 4, str(len(listing)))
         check("列表按时间从新到旧", listing[0]["mtime"] >= listing[-1]["mtime"])
