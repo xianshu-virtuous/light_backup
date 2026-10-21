@@ -70,7 +70,7 @@ class LightBackupPlugin(BasePlugin):
         "自带校验：每条包逐项核对哈希、条数、引用完整性与向量长度。"
         "命令 /备份 给人用，工具 backup_now / check_backup_status 给模型用。"
     )
-    plugin_version: str = "1.0.0"
+    plugin_version: str = "1.0.1"
     configs: list[type] = [LightBackupConfig]
 
     def __init__(self, config: Any = None) -> None:
