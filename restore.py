@@ -131,6 +131,7 @@ def plan_restore(
     merge_mode: str = MERGE_SKIP,
     config_files: int = 0,
     knowledge_files: int = 0,
+    vectors_count: int = 0,
     archive_name: str = "",
     archive_time: str = "",
 ) -> RestorePlan:
@@ -142,6 +143,7 @@ def plan_restore(
         merge_mode: ``skip`` / ``overwrite``。
         config_files: 包里配置数（仅用于提示不还原）。
         knowledge_files: 包里知识库数（仅用于提示不还原）。
+        vectors_count: 包里向量条数（**只是展示**，不写库；忘了传就会显示 0 条）。
         archive_name: 包名。
         archive_time: 包里记的时刻描述。
 
@@ -157,6 +159,7 @@ def plan_restore(
         records_total=memory.record_count,
         tags_total=memory.tag_count,
         memos_total=len(memory.memos),
+        vectors_total=int(vectors_count or 0),
         config_files=config_files,
         knowledge_files=knowledge_files,
         merge_mode=mode,

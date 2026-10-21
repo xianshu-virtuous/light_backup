@@ -439,6 +439,7 @@ class LightBackupService(BaseService):
                 merge_mode=mode,
                 config_files=payload.configs.file_count,
                 knowledge_files=payload.knowledge.file_count,
+                vectors_count=(payload.vectors.count if payload.vectors is not None else 0),
                 archive_name=path.name,
                 archive_time=str(manifest.get("created_at_text") or ""),
             )

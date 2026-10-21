@@ -447,6 +447,17 @@ def main() -> int:
         check("计划：会写入 3 条", plan.will_write == 3, str(plan.will_write))
         check("计划：包里内容摘要非空", bool(plan.summary()))
 
+        # 向量条数必须由调用方传进来（忘了传过，预览显示「向量 0 条」）
+        vector_plan = restore_mod.plan_restore(
+            source_snapshot, target_db, vectors_count=638
+        )
+        check("计划带上向量条数", vector_plan.vectors_total == 638, str(vector_plan.vectors_total))
+        check("计划摘要含向量字样", "向量" in vector_plan.summary(), vector_plan.summary())
+        check(
+            "不传向量条数时是 0（调用方必须显式传）",
+            restore_mod.plan_restore(source_snapshot, target_db).vectors_total == 0,
+        )
+
         written = restore_mod.apply_memory(source_snapshot, target_db, merge_mode="skip")
         check("还原写入 3 条记忆", written.written_records == 3, str(written.written_records))
         check("还原写入 6 条标签", written.written_tags == 6, str(written.written_tags))
