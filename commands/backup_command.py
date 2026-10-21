@@ -179,6 +179,8 @@ class BackupCommand(BaseCommand):
             parts.append(f"额外副本：{result['extra_copy']}")
         if result.get("pruned"):
             parts.append(f"按保留份数清掉旧包 {len(result['pruned'])} 份")
+        if result.get("extra_pruned"):
+            parts.append(f"额外副本目录也清掉旧包 {len(result['extra_pruned'])} 份")
         text = "\n".join(parts)
         await self._reply(text)
         return True, text

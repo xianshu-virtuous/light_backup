@@ -256,6 +256,14 @@ class LightBackupService(BaseService):
 
         keep = int(getattr(archive_cfg, "keep_count", 30) or 0)
         removed = await asyncio.to_thread(prune_archives, output_dir, keep) if keep else []
+        # 额外副本目录也要轮转：那个目录往往是网盘同步夹，只加不删等于慢性塞满。
+        # 只碰 ``*.lbk``，别的东西一个不动。
+        extra_pruned: list[Path] = []
+        if extra_dir is not None and keep:
+            try:
+                extra_pruned = await asyncio.to_thread(prune_archives, extra_dir, keep)
+            except OSError as exc:  # noqa: BLE001 - 清不动就算了，别连累主备份
+                logger.warning(f"[light_backup] 清理额外副本目录失败：{exc}")
 
         elapsed = round(time.time() - started, 2)
         size = out_path.stat().st_size if out_path.is_file() else 0
@@ -298,6 +306,7 @@ class LightBackupService(BaseService):
             "reason": reason,
             "extra_copy": extra_copied,
             "pruned": [path.name for path in removed],
+            "extra_pruned": [path.name for path in extra_pruned],
         }
 
     async def _copy_extra(self, source: Path, extra_dir: Path) -> str:
